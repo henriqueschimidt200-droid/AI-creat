@@ -1,0 +1,146 @@
+name: AI Creator - GERAR APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main, master ]
+
+permissions:
+  contents: read
+
+jobs:
+  apk:
+    name: Gerar APK Android
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Baixar projeto
+        uses: actions/checkout@v4
+
+      - name: Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+
+      - name: Flutter stable
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Criar projeto Android moderno
+        shell: bash
+        run: |
+          set -e
+          if [ ! -f android/app/src/main/AndroidManifest.xml ]; then
+            rm -rf android
+            flutter create \
+              --platforms=android \
+              --android-language kotlin \
+              --org com.aicreator \
+              --project-name ai_creator \
+              .
+          fi
+
+      - name: Configurar nome e icone AI Creator
+        shell: bash
+        run: |
+          set -e
+          MANIFEST=android/app/src/main/AndroidManifest.xml
+          mkdir -p android/app/src/main/res/drawable
+
+          if [ -f assets_ai_icon.png ]; then
+            cp assets_ai_icon.png android/app/src/main/res/drawable/ai_creator_icon.png
+            sed -i 's#android:icon="@mipmap/ic_launcher"#android:icon="@drawable/ai_creator_icon"#g' "$MANIFEST"
+            sed -i 's#android:roundIcon="@mipmap/ic_launcher_round"#android:roundIcon="@drawable/ai_creator_icon"#g' "$MANIFEST" || true
+          fi
+
+          if grep -q 'android:label=' "$MANIFEST"; then
+            sed -i 's/android:label="[^"]*"/android:label="AI Creator"/g' "$MANIFEST"
+          else
+            sed -i 's/<application /<application android:label="AI Creator" /' "$MANIFEST"
+          fi
+
+      - name: Verificar Android V2
+        shell: bash
+        run: |
+          set -e
+          test -f android/app/src/main/AndroidManifest.xml
+          test -f android/app/src/main/kotlin/com/aicreator/ai_creator/MainActivity.kt
+          if grep -R -E 'io\.flutter\.app\.(FlutterActivity|FlutterApplication)' android 2>/dev/null; then
+            echo 'ERRO: Android V1 detectado.'
+            exit 1
+          fi
+          echo 'Android V2 OK.'
+
+      - name: Instalar dependencias
+        run: flutter pub get
+
+      - name: Diagnóstico Dart
+        shell: bash
+        run: |
+          set +e
+          flutter analyze 2>&1 | tee analyze.log
+          CODE=${PIPESTATUS[0]}
+          echo "ANALYZE_EXIT=$CODE" >> "$GITHUB_ENV"
+          exit 0
+
+      - name: Compilar APK release
+        shell: bash
+        run: |
+          set +e
+          flutter build apk --release 2>&1 | tee build.log
+          CODE=${PIPESTATUS[0]}
+          echo "BUILD_EXIT=$CODE" >> "$GITHUB_ENV"
+          exit $CODE
+
+      - name: Relatório do diagnóstico
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo '# AI Creator - Diagnóstico'
+            echo
+            echo "- Flutter: $(flutter --version | head -n 1)"
+            echo "- Analyze exit: ${ANALYZE_EXIT:-não executado}"
+            echo "- Build exit: ${BUILD_EXIT:-não executado}"
+            echo
+            if [ "${BUILD_EXIT:-1}" = "0" ]; then
+              echo '## ✅ APK criado'
+              echo 'Artefato: **AI-Creator-APK**'
+            else
+              echo '## ❌ APK não criado'
+              echo
+              echo 'Veja `analyze.log` e `build.log` no artefato de diagnóstico.'
+              echo
+              echo '### Últimas linhas do analyze.log'
+              tail -n 80 analyze.log 2>/dev/null || true
+              echo
+              echo '### Últimas linhas do build.log'
+              tail -n 120 build.log 2>/dev/null || true
+            fi
+          } > diagnostic_report.md
+          cat diagnostic_report.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Enviar APK
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: AI-Creator-APK
+          path: build/app/outputs/flutter-apk/app-release.apk
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Enviar diagnóstico e logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: AI-Creator-Diagnostico
+          path: |
+            diagnostic_report.md
+            analyze.log
+            build.log
+          if-no-files-found: ignore
+          retention-days: 14
